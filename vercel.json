@@ -6,6 +6,9 @@
       "maxDuration": 15
     }
   },
+  "redirects": [
+    { "source": "/", "destination": "/static/", "permanent": false }
+  ],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/trends" }
   ]
