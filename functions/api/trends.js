@@ -63,21 +63,43 @@ function matchAI(item) {
 // ── Platform fetchers ─────────────────────────
 
 async function fetchBilibili() {
-  const r = await httpGet("https://s.search.bilibili.com/main/hotword");
-  if (!r) return null;
-  try {
-    const data = await r.json();
-    return (data.list || []).map((item, i) => ({
-      rank: item.pos || i + 1,
-      keyword: item.keyword || "",
-      show_name: item.show_name || item.keyword || "",
-      heat_score: item.heat_score || 0,
-      label: item.heat_layer || "",
-      url: "https://search.bilibili.com/all?keyword=" + encodeURIComponent(item.keyword || ""),
-    }));
-  } catch (e) {
-    return null;
+  // Try multiple B站 endpoints (some may be geo-accessible from Cloudflare)
+  const urls = [
+    "https://s.search.bilibili.com/main/hotword",
+    "https://api.bilibili.com/x/web-interface/ranking/v2?rid=0",
+  ];
+  for (const url of urls) {
+    const r = await httpGet(url, { "Accept": "application/json" });
+    if (!r) continue;
+    try {
+      const data = await r.json();
+      // Handle hotword API format
+      if (data.list && data.list[0] && data.list[0].keyword !== undefined) {
+        return (data.list || []).map((item, i) => ({
+          rank: item.pos || i + 1,
+          keyword: item.keyword || "",
+          show_name: item.show_name || item.keyword || "",
+          heat_score: item.heat_score || 0,
+          label: item.heat_layer || "",
+          url: "https://search.bilibili.com/all?keyword=" + encodeURIComponent(item.keyword || ""),
+        }));
+      }
+      // Handle ranking API format
+      if (data.data && data.data.list) {
+        return data.data.list.slice(0, 20).map((item, i) => ({
+          rank: i + 1,
+          keyword: item.title || "",
+          show_name: item.title || "",
+          heat_score: item.stat ? item.stat.view : 0,
+          label: item.rcmd_reason ? item.rcmd_reason.content : "",
+          url: item.short_link_v2 || ("https://www.bilibili.com/video/" + (item.bvid || "")),
+        }));
+      }
+    } catch (e) {
+      continue;
+    }
   }
+  return null;
 }
 
 async function fetchWeibo() {
@@ -146,7 +168,10 @@ async function cachedFetch(key, fetcher) {
     return entry.data;
   }
   const data = await fetcher();
-  cache.set(key, { ts: Date.now(), data });
+  // Don't cache null/empty results — allow retry on next request
+  if (data && data.length > 0) {
+    cache.set(key, { ts: Date.now(), data });
+  }
   return data;
 }
 
