@@ -292,7 +292,7 @@
   // Main data loading
   // ═══════════════════════════════════════════
 
-  // Mode 1: Unified API (Vercel deployment) — no CORS proxy needed
+  // Mode 1: Unified API (Vercel/Cloudflare deployment)
   function loadFromAPI() {
     return fetch("/api/trends", { signal: AbortSignal.timeout(15000) })
       .then(function (r) {
@@ -300,20 +300,48 @@
         return r.json();
       })
       .then(function (data) {
-        // Annotate AI matches (backend already does this, but double-check)
+        // Annotate AI matches and cache
+        var fallbackPromises = [];
         ["bilibili", "weibo", "douyin"].forEach(function (name) {
           var p = data.platforms && data.platforms[name];
           if (p && p.items) {
             p.items.forEach(function (it) {
               if (!it.ai_match) it.ai_match = matchAI(it);
             });
-            state.sources[name] = "API";
-            // Cache individual platform data
-            if (p.status === "ok" && p.items.length > 0) cacheSet(name, p.items);
+            if (p.status === "ok" && p.items.length > 0) {
+              state.sources[name] = "API";
+              cacheSet(name, p.items);
+            }
+          }
+          // If API returned error for this platform, fall back to direct fetch
+          if (!p || p.status === "error" || p.items.length === 0) {
+            fallbackPromises.push(
+              fetchPlatform(name).then(function (r) {
+                if (r.status === "ok" && r.items.length > 0) {
+                  r.items.forEach(function (it) {
+                    if (!it.ai_match) it.ai_match = matchAI(it);
+                  });
+                  data.platforms[name] = { status: "ok", items: r.items, error: "", source: r.source || "" };
+                  state.sources[name] = r.source || "";
+                  cacheSet(name, r.items);
+                }
+              }).catch(function () {})
+            );
           }
         });
-        console.log("数据来源: API统一接口");
-        return data;
+        return Promise.all(fallbackPromises).then(function () {
+          // Recalculate totals
+          var aiTotal = 0, allTotal = 0;
+          ["bilibili", "weibo", "douyin"].forEach(function (name) {
+            var items = data.platforms[name].items || [];
+            allTotal += items.length;
+            aiTotal += items.filter(function (it) { return it.ai_match.matched; }).length;
+          });
+          data.ai_filtered_count = aiTotal;
+          data.total_count = allTotal;
+          console.log("数据来源: API统一接口 + 直连回退");
+          return data;
+        });
       });
   }
 
